@@ -1,0 +1,201 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import * as logger from '../logger.js';
+import { getLegacyUserConfigPath, getLogsDir, getUserConfigPath } from '../paths.js';
+import { AccountSelectionStrategySchema, DEFAULT_CONFIG, DiagnosticLogLevelSchema, KiroConfigSchema, RegionSchema, StreamRecoveryModeSchema } from './schema.js';
+export { getUserConfigPath } from '../paths.js';
+function ensureUserConfigTemplate() {
+    const path = getUserConfigPath();
+    if (!existsSync(path)) {
+        try {
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf-8');
+            logger.log(`Created default config template at ${path}`);
+        }
+        catch (error) {
+            logger.warn(`Failed to create config template at ${path}: ${String(error)}`);
+        }
+    }
+}
+export function getProjectConfigPath(directory) {
+    return join(directory, '.opencode', 'kiro.json');
+}
+// Additively write any DEFAULT_CONFIG key missing from an existing user
+// kiro.json so new-version keys become visible/toggleable. Additive-only,
+// parse-safe, atomic, idempotent, user-config-only. See plan config-backfill.md.
+function backfillUserConfig(path) {
+    if (!existsSync(path)) {
+        return;
+    }
+    let raw;
+    try {
+        raw = JSON.parse(readFileSync(path, 'utf-8'));
+    }
+    catch {
+        return;
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        return;
+    }
+    const obj = raw;
+    const defaultKeys = Object.keys(DEFAULT_CONFIG);
+    const missing = defaultKeys.filter((key) => !(key in obj));
+    if (missing.length === 0) {
+        return;
+    }
+    const next = { ...obj };
+    for (const key of missing) {
+        next[key] = DEFAULT_CONFIG[key];
+    }
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+    try {
+        writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+        try {
+            renameSync(tmp, path);
+        }
+        catch (renameError) {
+            try {
+                if (existsSync(tmp))
+                    unlinkSync(tmp);
+            }
+            catch { }
+            throw renameError;
+        }
+        logger.log(`Backfilled ${missing.length} new config key(s) into ${path}: ${missing.join(', ')}`);
+    }
+    catch (error) {
+        logger.warn(`Config backfill failed for ${path}: ${String(error)}`);
+    }
+}
+function loadConfigFile(path) {
+    try {
+        if (!existsSync(path)) {
+            return null;
+        }
+        const content = readFileSync(path, 'utf-8');
+        const rawConfig = JSON.parse(content);
+        const result = KiroConfigSchema.partial().safeParse(rawConfig);
+        if (!result.success) {
+            const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ');
+            logger.warn(`Config validation error at ${path}: ${issues}`);
+            return null;
+        }
+        return result.data;
+    }
+    catch (error) {
+        if (error instanceof SyntaxError) {
+            logger.warn(`Invalid JSON in config file ${path}: ${error.message}`);
+        }
+        else {
+            logger.warn(`Failed to load config file ${path}: ${String(error)}`);
+        }
+        return null;
+    }
+}
+function mergeConfigs(base, override) {
+    return {
+        ...base,
+        ...override
+    };
+}
+function parseBooleanEnv(value, fallback) {
+    if (value === undefined) {
+        return fallback;
+    }
+    if (value === '1' || value === 'true') {
+        return true;
+    }
+    if (value === '0' || value === 'false') {
+        return false;
+    }
+    return fallback;
+}
+function parseNumberEnv(value, fallback) {
+    if (value === undefined) {
+        return fallback;
+    }
+    const parsed = Number(value);
+    if (isNaN(parsed)) {
+        return fallback;
+    }
+    return parsed;
+}
+function parseBoundedIntegerEnv(value, fallback, minimum, maximum) {
+    if (value === undefined)
+        return fallback;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum)
+        return fallback;
+    return parsed;
+}
+function applyEnvOverrides(config) {
+    const env = process.env;
+    return {
+        ...config,
+        account_selection_strategy: env.KIRO_ACCOUNT_SELECTION_STRATEGY
+            ? AccountSelectionStrategySchema.catch('lowest-usage').parse(env.KIRO_ACCOUNT_SELECTION_STRATEGY)
+            : config.account_selection_strategy,
+        quota_avoidance_enabled: parseBooleanEnv(env.KIRO_QUOTA_AVOIDANCE_ENABLED, config.quota_avoidance_enabled),
+        quota_reserve_threshold: parseNumberEnv(env.KIRO_QUOTA_RESERVE_THRESHOLD, config.quota_reserve_threshold),
+        default_region: env.KIRO_DEFAULT_REGION
+            ? RegionSchema.catch('us-east-1').parse(env.KIRO_DEFAULT_REGION)
+            : config.default_region,
+        rate_limit_retry_delay_ms: parseNumberEnv(env.KIRO_RATE_LIMIT_RETRY_DELAY_MS, config.rate_limit_retry_delay_ms),
+        rate_limit_max_retries: parseNumberEnv(env.KIRO_RATE_LIMIT_MAX_RETRIES, config.rate_limit_max_retries),
+        max_request_iterations: parseNumberEnv(env.KIRO_MAX_REQUEST_ITERATIONS, config.max_request_iterations),
+        sdk_response_timeout_enabled: parseBooleanEnv(env.KIRO_SDK_RESPONSE_TIMEOUT_ENABLED, config.sdk_response_timeout_enabled),
+        sdk_response_timeout_ms: parseNumberEnv(env.KIRO_SDK_RESPONSE_TIMEOUT_MS, config.sdk_response_timeout_ms),
+        sdk_http_keep_alive: parseBooleanEnv(env.KIRO_SDK_HTTP_KEEP_ALIVE, config.sdk_http_keep_alive),
+        stream_event_timeout_enabled: parseBooleanEnv(env.KIRO_STREAM_EVENT_TIMEOUT_ENABLED, config.stream_event_timeout_enabled),
+        request_timeout_ms: parseNumberEnv(env.KIRO_REQUEST_TIMEOUT_MS, config.request_timeout_ms),
+        stream_buffer_until_complete: parseBooleanEnv(env.KIRO_STREAM_BUFFER_UNTIL_COMPLETE, config.stream_buffer_until_complete),
+        compaction_buffer_until_complete: parseBooleanEnv(env.KIRO_COMPACTION_BUFFER_UNTIL_COMPLETE, config.compaction_buffer_until_complete),
+        stream_max_attempts: parseNumberEnv(env.KIRO_STREAM_MAX_ATTEMPTS, config.stream_max_attempts),
+        stream_recovery_mode: env.KIRO_STREAM_RECOVERY_MODE
+            ? StreamRecoveryModeSchema.catch('off').parse(env.KIRO_STREAM_RECOVERY_MODE)
+            : config.stream_recovery_mode,
+        stream_recovery_reuse_conversation_id_across_accounts: parseBooleanEnv(env.KIRO_STREAM_RECOVERY_REUSE_CONVERSATION_ID_ACROSS_ACCOUNTS, config.stream_recovery_reuse_conversation_id_across_accounts),
+        token_expiry_buffer_ms: parseNumberEnv(env.KIRO_TOKEN_EXPIRY_BUFFER_MS, config.token_expiry_buffer_ms),
+        usage_sync_max_retries: parseNumberEnv(env.KIRO_USAGE_SYNC_MAX_RETRIES, config.usage_sync_max_retries),
+        auth_server_port_start: parseNumberEnv(env.KIRO_AUTH_SERVER_PORT_START, config.auth_server_port_start),
+        auth_server_port_range: parseNumberEnv(env.KIRO_AUTH_SERVER_PORT_RANGE, config.auth_server_port_range),
+        usage_tracking_enabled: parseBooleanEnv(env.KIRO_USAGE_TRACKING_ENABLED, config.usage_tracking_enabled),
+        enable_log_api_request: parseBooleanEnv(env.KIRO_ENABLE_LOG_API_REQUEST, config.enable_log_api_request),
+        diagnostic_log_level: env.KIRO_DIAGNOSTIC_LOG_LEVEL
+            ? DiagnosticLogLevelSchema.catch('off').parse(env.KIRO_DIAGNOSTIC_LOG_LEVEL)
+            : config.diagnostic_log_level,
+        log_retention_days: parseBoundedIntegerEnv(env.KIRO_LOG_RETENTION_DAYS, config.log_retention_days, 1, 365),
+        log_max_total_size_mb: parseBoundedIntegerEnv(env.KIRO_LOG_MAX_TOTAL_SIZE_MB, config.log_max_total_size_mb, 16, 102400),
+        log_compress_after_days: parseBoundedIntegerEnv(env.KIRO_LOG_COMPRESS_AFTER_DAYS, config.log_compress_after_days, 1, 30),
+        log_segment_size_mb: parseBoundedIntegerEnv(env.KIRO_LOG_SEGMENT_SIZE_MB, config.log_segment_size_mb, 1, 256)
+    };
+}
+export function loadConfig(directory) {
+    const userConfigPath = getUserConfigPath();
+    const legacyUserConfigPath = getLegacyUserConfigPath();
+    const configSourcePath = !existsSync(userConfigPath) && existsSync(legacyUserConfigPath)
+        ? legacyUserConfigPath
+        : userConfigPath;
+    if (configSourcePath === userConfigPath)
+        ensureUserConfigTemplate();
+    backfillUserConfig(configSourcePath);
+    let config = { ...DEFAULT_CONFIG };
+    const userConfig = loadConfigFile(configSourcePath);
+    if (userConfig) {
+        config = mergeConfigs(config, userConfig);
+    }
+    const projectConfigPath = getProjectConfigPath(directory);
+    const projectConfig = loadConfigFile(projectConfigPath);
+    if (projectConfig) {
+        config = mergeConfigs(config, projectConfig);
+    }
+    config = applyEnvOverrides(config);
+    logger.configureLogging(config);
+    return config;
+}
+export function configExists(path) {
+    return existsSync(path);
+}
+export function getDefaultLogsDir() {
+    return getLogsDir();
+}

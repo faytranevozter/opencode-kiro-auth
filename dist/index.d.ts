@@ -1,0 +1,121 @@
+export { KiroOAuthPlugin } from './plugin.js'
+export type { KiroConfig } from './plugin/config/index.js'
+export type { KiroAuthMethod, KiroRegion, ManagedAccount } from './plugin/types.js'
+export { KiroV2Plugin } from './plugin/v2.js'
+declare const _default: {
+  id: string
+  server: ({ client, directory }: any) => Promise<{
+    config: (input: any) => Promise<void>
+    'chat.headers': (
+      input: any,
+      output: {
+        headers: Record<string, string>
+      }
+    ) => Promise<void>
+    auth: {
+      provider: string
+      loader: (getAuth: any) => Promise<{
+        apiKey: string
+        baseURL: string
+        fetch: (input: any, init?: any) => Promise<Response>
+      }>
+      methods: (
+        | {
+            type: 'oauth'
+            label: string
+            prompts?: Array<
+              | {
+                  type: 'text'
+                  key: string
+                  message: string
+                  placeholder?: string
+                  validate?: (value: string) => string | undefined
+                  condition?: (inputs: Record<string, string>) => boolean
+                  when?: {
+                    key: string
+                    op: 'eq' | 'neq'
+                    value: string
+                  }
+                }
+              | {
+                  type: 'select'
+                  key: string
+                  message: string
+                  options: Array<{
+                    label: string
+                    value: string
+                    hint?: string
+                  }>
+                  condition?: (inputs: Record<string, string>) => boolean
+                  when?: {
+                    key: string
+                    op: 'eq' | 'neq'
+                    value: string
+                  }
+                }
+            >
+            authorize(
+              inputs?: Record<string, string>
+            ): Promise<import('@opencode-ai/plugin').AuthOAuthResult>
+          }
+        | {
+            type: 'api'
+            label: string
+            prompts?: Array<
+              | {
+                  type: 'text'
+                  key: string
+                  message: string
+                  placeholder?: string
+                  validate?: (value: string) => string | undefined
+                  condition?: (inputs: Record<string, string>) => boolean
+                  when?: {
+                    key: string
+                    op: 'eq' | 'neq'
+                    value: string
+                  }
+                }
+              | {
+                  type: 'select'
+                  key: string
+                  message: string
+                  options: Array<{
+                    label: string
+                    value: string
+                    hint?: string
+                  }>
+                  condition?: (inputs: Record<string, string>) => boolean
+                  when?: {
+                    key: string
+                    op: 'eq' | 'neq'
+                    value: string
+                  }
+                }
+            >
+            authorize?(inputs?: Record<string, string>): Promise<
+              | {
+                  type: 'success'
+                  key: string
+                  provider?: string
+                  metadata?: Record<string, string>
+                }
+              | {
+                  type: 'failed'
+                }
+            >
+          }
+      )[]
+    }
+    provider: {
+      id: string
+      models: (provider: any) => Promise<Record<string, any>>
+    }
+  }>
+  setup: (
+    context: import('@opencode/plugin/promise/plugin').Context
+  ) =>
+    | Promise<import('@opencode/plugin/promise/plugin').Cleanup | void>
+    | import('@opencode/plugin/promise/plugin').Cleanup
+    | void
+}
+export default _default

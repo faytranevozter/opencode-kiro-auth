@@ -1,0 +1,10 @@
+/** Stable denominator event written once per inbound streaming request. */
+export declare const STREAM_REQUEST_STARTED_LOG = 'Kiro stream request started'
+/** Diagnostic-level marker emitted when an SDK stream attempt is opened. */
+export declare const STREAM_ATTEMPT_STARTED_LOG = 'Kiro stream attempt started'
+/** Stable marker for a clean SDK `done` without completion metadata. */
+export declare const STREAM_MISSING_COMPLETION_LOG = 'Kiro stream ended without completion metadata'
+/** Fully empty clean EOF retried once on the same account without failure classification. */
+export declare const STREAM_EMPTY_CLEAN_EOF_RETRY_LOG = 'Kiro empty clean EOF retrying'
+/** Unified request-terminal summary across success, failure, and cancellation. */
+export declare const STREAM_TERMINAL_LOG = 'Kiro stream request terminal'

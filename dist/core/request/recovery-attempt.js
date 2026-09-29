@@ -1,0 +1,193 @@
+import { GenerateAssistantResponseCommand } from '@aws/codewhisperer-streaming-client';
+import * as logger from '../../plugin/logger.js';
+import { EmittedOutputAccumulator } from '../../plugin/reasoning/emitted-output.js';
+import { StreamObserver } from '../../plugin/streaming/stream-observer.js';
+import { accountLogAlias, recoveryIdentityLogFields } from './recovery-request-identity.js';
+import { buildStreamTerminalDiagnostics, diagnosticContextLogFields } from './request-shape-diagnostics.js';
+import { SdkEventStreamIterationError } from './stream-error.js';
+import { STREAM_ATTEMPT_STARTED_LOG, STREAM_MISSING_COMPLETION_LOG } from './stream-log-events.js';
+export class RecoveryAttemptFactory {
+    config;
+    request;
+    initial;
+    services;
+    constructor(options) {
+        this.config = options.config;
+        this.request = options.request;
+        this.initial = options.initial;
+        this.services = options.services;
+    }
+    async open(attemptIndex, selectedAccount) {
+        const state = await this.resolveAttemptState(attemptIndex, selectedAccount);
+        let eventCount = state.eventCount;
+        const absoluteAttempt = this.request.priorStreamFailures + attemptIndex;
+        const streamStartedAt = new Date(state.startedAt).toISOString();
+        const logDetails = (details = {}) => {
+            const observed = state.observer.snapshot();
+            const emittedToolCount = state.emitted.toolUses().length;
+            const terminalSource = details.terminalSource ?? observed.terminalSource;
+            return {
+                ...diagnosticContextLogFields(this.request.diagnosticContext),
+                ...recoveryIdentityLogFields(state.snapshot),
+                model: this.request.model,
+                effectiveModel: state.prepared.effectiveModel,
+                effort: state.prepared.effort,
+                region: state.prepared.region,
+                accountAlias: accountLogAlias(state.account.id),
+                streamAttempt: absoluteAttempt,
+                maxStreamAttempts: this.config.stream_max_attempts,
+                streamDeliveryMode: 'live',
+                sdkHttpKeepAlive: this.config.sdk_http_keep_alive,
+                processId: process.pid,
+                bunVersion: process.versions.bun,
+                streamStartedAt,
+                upstreamEventCount: eventCount,
+                eventTypeCounts: observed.eventTypeCounts,
+                streamElapsedMs: Date.now() - state.startedAt,
+                emittedReasoningChars: state.emitted.reasoningText.length,
+                emittedVisibleChars: state.emitted.visibleText.length,
+                emittedToolCount,
+                sawToolIntent: observed.sawToolIntent,
+                hasOpenToolIntent: observed.hasOpenToolIntent,
+                reasoningPhase: observed.reasoningPhase,
+                dialectActive: observed.dialectActive,
+                dialectMarkerIndex: observed.dialectMarkerIndex,
+                dialectMarkerInCodeRegion: observed.dialectMarkerInCodeRegion,
+                dialectResolution: observed.dialectResolution,
+                ...buildStreamTerminalDiagnostics(this.request.diagnosticContext.level, terminalSource, emittedToolCount),
+                terminalSource,
+                ...details
+            };
+        };
+        if (attemptIndex > 1 && this.request.diagnosticContext.level !== 'off') {
+            logger.log(STREAM_ATTEMPT_STARTED_LOG, logDetails({ outcome: 'started' }));
+        }
+        if (state.apiTimestamp && attemptIndex > 1) {
+            this.services.logSdkRequest(state.prepared, state.account, state.apiTimestamp);
+        }
+        const epoch = this.services.nextAccountAttemptEpoch(state.account.id);
+        const isCurrent = () => this.services.isAccountAttemptCurrent(state.account.id, epoch);
+        const attemptId = crypto.randomUUID();
+        this.services.setCurrentAttemptId(attemptId);
+        let completionDone = false;
+        const onComplete = async (completed) => {
+            if (!completionDone) {
+                completionDone = true;
+                if (isCurrent()) {
+                    this.services.markSuccessful(state.account);
+                    await this.services.syncUsage(state.account, state.auth, isCurrent);
+                }
+            }
+            this.services.commitReasoning(completed, state.account.id, attemptId, this.services.getCurrentAttemptId());
+        };
+        const lifecycle = {
+            signal: this.request.signal,
+            onUpstreamWaitStart: ({ eventIndex }) => {
+                eventCount = eventIndex;
+                if (eventIndex === 0) {
+                    if (!this.config.sdk_response_timeout_enabled)
+                        this.services.endUpstreamWait();
+                    return;
+                }
+                if (!this.config.stream_event_timeout_enabled)
+                    return;
+                this.services.beginUpstreamWait('stream event', this.config.request_timeout_ms, {
+                    conversationId: state.prepared.conversationId,
+                    model: this.request.model,
+                    effectiveModel: state.prepared.effectiveModel,
+                    region: state.prepared.region,
+                    eventIndex
+                });
+            },
+            onUpstreamWaitEnd: this.services.endUpstreamWait,
+            onIterationError: (error, afterCompletionMetadata) => {
+                if (!afterCompletionMetadata)
+                    return;
+                state.observer.noteTerminalSource('completion_metadata_received');
+                logger.log('Kiro SDK event stream closed after completion metadata', logDetails({
+                    outcome: 'ignored_after_completion_metadata',
+                    platform: process.platform,
+                    afterCompletionMetadata,
+                    error: this.services.describeError(error)
+                }));
+            },
+            onCleanEofWithoutCompletionMetadata: () => {
+                logger.warn(STREAM_MISSING_COMPLETION_LOG, logDetails({ outcome: 'clean_eof_without_completion_metadata' }));
+            },
+            onComplete,
+            streamObserver: state.observer,
+            emittedOutput: state.emitted,
+            attemptId,
+            ...(this.request.inheritedLoopId !== undefined
+                ? { inheritedLoopId: this.request.inheritedLoopId }
+                : {}),
+            effectiveModel: state.prepared.effectiveModel,
+            recoveryMode: this.config.stream_recovery_mode
+        };
+        const client = this.services.makeSdkClient(state.auth, state.prepared);
+        const command = new GenerateAssistantResponseCommand({
+            conversationState: state.prepared.conversationState,
+            profileArn: state.prepared.profileArn
+        });
+        this.beginSdkResponseWait(state.prepared);
+        let sdkResponse;
+        try {
+            sdkResponse = await client.send(command, { abortSignal: this.request.signal });
+        }
+        catch (error) {
+            this.services.endUpstreamWait();
+            throw error;
+        }
+        this.services.markSendResolved();
+        if (state.apiTimestamp)
+            this.services.logSdkResponse(state.prepared, state.apiTimestamp);
+        const handle = await this.services.responseHandler.prepareSdkStreamingAttempt({
+            sdkResponse,
+            model: this.request.model,
+            conversationId: state.prepared.conversationId,
+            lifecycle,
+            recoveryMode: this.config.stream_recovery_mode
+        });
+        return { account: state.account, handle, logDetails };
+    }
+    async resolveAttemptState(attemptIndex, selectedAccount) {
+        if (attemptIndex === 1)
+            return this.initial;
+        this.services.consumeRequestIteration();
+        let account = selectedAccount;
+        let auth = this.services.toAuthDetails(account);
+        const refreshed = await this.services.refreshAccount(account, auth);
+        account = refreshed.account;
+        if (refreshed.shouldContinue) {
+            await this.services.wait(500, this.request.signal);
+            throw new SdkEventStreamIterationError(new Error('Kiro token refresh requested another recovery iteration'));
+        }
+        auth = this.services.toAuthDetails(account);
+        const request = this.services.prepareRequest(account, auth);
+        return {
+            account,
+            auth,
+            prepared: request.prepared,
+            snapshot: request.snapshot,
+            observer: new StreamObserver(),
+            emitted: new EmittedOutputAccumulator(),
+            eventCount: 0,
+            startedAt: Date.now(),
+            apiTimestamp: this.config.enable_log_api_request ? logger.getTimestamp() : null
+        };
+    }
+    beginSdkResponseWait(prepared) {
+        if (!this.config.sdk_response_timeout_enabled)
+            return;
+        const messageContext = prepared.conversationState.currentMessage?.userInputMessage?.userInputMessageContext;
+        this.services.beginUpstreamWait('SDK response', this.config.sdk_response_timeout_ms, {
+            conversationId: prepared.conversationId,
+            model: this.request.model,
+            effectiveModel: prepared.effectiveModel,
+            effort: prepared.effort,
+            region: prepared.region,
+            historyLength: prepared.conversationState.history?.length ?? 0,
+            toolCount: messageContext?.tools?.length ?? 0
+        });
+    }
+}
