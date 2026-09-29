@@ -20,7 +20,7 @@
     "format": "prettier --write 'src/**/*.ts'",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepare": "husky",
+    "prepare": "node scripts/prepare.mjs",
     "prepublishOnly": "bun run build"
   },
   "keywords": [

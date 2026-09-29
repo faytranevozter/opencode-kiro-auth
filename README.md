@@ -64,6 +64,11 @@ Use the native V2 plugin field:
 }
 ```
 
+To install directly from a Git fork, use `opencode plugin add
+github:OWNER/opencode-kiro-auth`. The Git dependency runs its `prepare` build
+to generate `dist/`; registry installations ship prebuilt files. Ensure the
+Git revision contains this preparation script (older revisions only ran Husky).
+
 Run `/connect`, select **Kiro**, then choose AWS Builder ID / IAM Identity
 Center or the Profile ARN method. Existing accounts in `kiro.db` and Kiro CLI
 auto-sync continue to work without rewriting V1's `auth.json`.
