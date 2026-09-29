@@ -1,3 +1,4 @@
+export { default } from './src/index'
 export { authorizeKiroIDC } from './src/kiro/oauth-idc'
 export { KiroOAuthPlugin, createKiroPlugin } from './src/plugin'
 export type { KiroConfig } from './src/plugin/config'
@@ -7,3 +8,4 @@ export type {
   KiroRegion,
   ManagedAccount
 } from './src/plugin/types'
+export { KiroV2Plugin } from './src/plugin/v2'

@@ -104,7 +104,15 @@ export class RequestHandler {
     private accountManager: AccountManager,
     private config: KiroConfig,
     private repository: AccountRepository,
-    private client?: any
+    private client?: {
+      provider: {
+        oauth: {
+          authorize: (input: { path: { id: string }; body: { method: number } }) => Promise<unknown>
+          callback: (input: { path: { id: string }; body: { method: number } }) => Promise<unknown>
+        }
+      }
+    },
+    private reauthenticate?: () => Promise<void>
   ) {
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
     this.accountRefreshService = new AccountRefreshService(
@@ -978,7 +986,7 @@ export class RequestHandler {
   }
 
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
-    if (!this.client) return false
+    if (!this.client && !this.reauthenticate) return false
 
     const cooldownRemaining = REAUTH_FAILURE_COOLDOWN_MS - (Date.now() - this.lastFailedReauthAt)
     if (cooldownRemaining > 0) {
@@ -1002,17 +1010,23 @@ export class RequestHandler {
   }
 
   private async performReauth(showToast: ToastFunction): Promise<boolean> {
+    const client = this.client
+    if (!client && !this.reauthenticate) return false
     try {
       showToast('Session expired. Re-authenticating...', 'warning')
-      await this.client.provider.oauth.authorize({
-        path: { id: 'kiro-auth' },
-        body: { method: 0 }
-      })
+      if (this.reauthenticate) {
+        await this.reauthenticate()
+      } else if (client) {
+        await client.provider.oauth.authorize({
+          path: { id: 'kiro-auth' },
+          body: { method: 0 }
+        })
 
-      await this.client.provider.oauth.callback({
-        path: { id: 'kiro-auth' },
-        body: { method: 0 }
-      })
+        await client.provider.oauth.callback({
+          path: { id: 'kiro-auth' },
+          body: { method: 0 }
+        })
+      }
 
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()

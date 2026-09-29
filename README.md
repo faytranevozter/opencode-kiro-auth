@@ -52,6 +52,35 @@
 
 ## Installation
 
+### OpenCode 2
+
+The V2 adapter targets OpenCode **2.0.19** and `@opencode/plugin` 2.0.19.
+Use the native V2 plugin field:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@sunerpy/opencode-kiro-auth"]
+}
+```
+
+Run `/connect`, select **Kiro**, then choose AWS Builder ID / IAM Identity
+Center or the Profile ARN method. Existing accounts in `kiro.db` and Kiro CLI
+auto-sync continue to work without rewriting V1's `auth.json`.
+
+V2 uses a plugin-owned, loopback-only OpenAI-compatible transport with a random
+per-instance endpoint. The existing AWS request, account rotation, token refresh,
+and stream recovery pipeline remains unchanged. Unloading the plugin closes the
+endpoint and stops its keep-alive controller. Notifications currently go to
+server logs rather than V1's toast API. V1's interactive account-management
+menu is not registered on the V2 background server.
+
+The historical `0.0.0-next-17444` beta uses a different plugin API; upgrade to
+the targeted V2 release. V1 object entrypoints are documented for **1.18.29+**;
+older V1 releases are not part of the new adapter's compatibility guarantee.
+
+### OpenCode 1
+
 Add the plugin to your `opencode.json` or `opencode.jsonc`:
 
 ```json

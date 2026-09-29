@@ -118,7 +118,8 @@ export async function pollKiroIDCToken(
   deviceCode: string,
   interval: number,
   expiresIn: number,
-  region: KiroRegion
+  region: KiroRegion,
+  signal?: AbortSignal
 ): Promise<KiroIDCTokenResult> {
   if (!clientId || !clientSecret || !deviceCode) {
     const error = new Error('Missing required parameters for token polling')
@@ -133,13 +134,25 @@ export async function pollKiroIDCToken(
   let attempts = 0
 
   while (attempts < maxAttempts) {
+    signal?.throwIfAborted()
     attempts++
 
-    await new Promise((resolve) => setTimeout(resolve, currentInterval))
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = (): void => {
+        clearTimeout(timer)
+        reject(signal?.reason)
+      }
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }, currentInterval)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
 
     try {
       const tokenResponse = await fetch(`${ssoOIDCEndpoint}/token`, {
         method: 'POST',
+        signal,
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': KIRO_CONSTANTS.USER_AGENT
@@ -228,6 +241,7 @@ export async function pollKiroIDCToken(
         `Token polling failed: missing tokens in response: ${responseText ? responseText.slice(0, 300) : '[empty]'}`
       )
     } catch (error) {
+      signal?.throwIfAborted()
       if (
         error instanceof Error &&
         (error.message.includes('expired') ||

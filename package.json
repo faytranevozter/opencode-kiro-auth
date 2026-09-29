@@ -5,6 +5,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/index.d.ts",
+      "default": "./server.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/fix-esm-imports.mjs",
     "format": "prettier --write 'src/**/*.ts'",
@@ -39,6 +49,7 @@
   "dependencies": {
     "@aws/codewhisperer-streaming-client": "^1.0.34",
     "@opencode-ai/plugin": "^1.15.11",
+    "@opencode/plugin": "2.0.19",
     "libsql": "^0.5.29",
     "proper-lockfile": "^4.1.2",
     "zod": "^3.24.0"
@@ -63,6 +74,7 @@
   },
   "files": [
     "dist",
+    "server.js",
     "package.json",
     "README.md",
     "LICENSE"

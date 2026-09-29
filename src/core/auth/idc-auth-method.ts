@@ -58,7 +58,10 @@ export class IdcAuthMethod {
     private accountManager: any
   ) {}
 
-  async authorize(inputs?: Record<string, string>): Promise<AuthOuathResult> {
+  async authorize(
+    inputs?: Record<string, string>,
+    options?: { signal?: AbortSignal; openBrowser?: boolean }
+  ): Promise<AuthOuathResult> {
     const configuredServiceRegion: KiroRegion = this.config.default_region
     const invokedWithoutPrompts = !inputs || Object.keys(inputs).length === 0
 
@@ -84,7 +87,7 @@ export class IdcAuthMethod {
       : auth.verificationUriComplete || auth.verificationUrl
 
     // Open the *AWS* verification page directly (no local web server).
-    openBrowser(verificationUrl)
+    if (options?.openBrowser !== false) openBrowser(verificationUrl)
 
     return {
       url: verificationUrl,
@@ -99,8 +102,10 @@ export class IdcAuthMethod {
             auth.deviceCode,
             auth.interval,
             auth.expiresIn,
-            oidcRegion
+            oidcRegion,
+            options?.signal
           )
+          options?.signal?.throwIfAborted()
 
           const profileArn =
             inputs?.profile_arn?.trim() || configuredProfileArn || readActiveProfileArnFromKiroCli()
